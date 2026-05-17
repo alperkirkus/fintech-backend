@@ -11,6 +11,12 @@ type Config struct {
 	App AppConfig
 	DB  DBConfig
 	Log LogConfig
+	JWT JWTConfig
+}
+
+type JWTConfig struct {
+	Secret string
+	TTL    time.Duration
 }
 
 type AppConfig struct {
@@ -58,10 +64,19 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid DB_CONN_MAX_LIFETIME: %w", err)
 	}
 
+	jwtTTL, err := time.ParseDuration(getEnv("JWT_TTL", "24h"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWT_TTL: %w", err)
+	}
+
 	configuration := &Config{
 		App: AppConfig{
 			Env:  getEnv("APP_ENV", "development"),
 			Port: getEnv("APP_PORT", "8080"),
+		},
+		JWT: JWTConfig{
+			Secret: getEnv("JWT_SECRET", "change-me-in-production"),
+			TTL:    jwtTTL,
 		},
 		DB: DBConfig{
 			Host:            getEnv("DB_HOST", "localhost"),
