@@ -71,8 +71,12 @@ func (databaseInstance *DB) runMigrations() error {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 
-	version, dirty, _ := migrator.Version()
-	log.Info().Uint("version", version).Bool("dirty", dirty).Msg("migrations applied")
+	version, dirty, err := migrator.Version()
+	if err != nil {
+		log.Warn().Err(err).Msg("could not read migration version")
+	} else {
+		log.Info().Uint("version", version).Bool("dirty", dirty).Msg("migrations applied")
+	}
 
 	return nil
 }

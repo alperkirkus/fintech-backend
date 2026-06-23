@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
-	App AppConfig
-	DB  DBConfig
-	Log LogConfig
-	JWT JWTConfig
+	App       AppConfig
+	DB        DBConfig
+	Log       LogConfig
+	JWT       JWTConfig
+	RateLimit RateLimitConfig
+	CORS      CORSConfig
 }
 
 type JWTConfig struct {
@@ -22,6 +25,16 @@ type JWTConfig struct {
 type AppConfig struct {
 	Env  string
 	Port string
+}
+
+type RateLimitConfig struct {
+	Enabled           bool
+	RequestsPerSecond float64
+	Burst             int
+}
+
+type CORSConfig struct {
+	AllowedOrigins []string
 }
 
 type DBConfig struct {
@@ -49,6 +62,21 @@ type LogConfig struct {
 }
 
 func Load() (*Config, error) {
+	rateLimitEnabled, err := strconv.ParseBool(getEnv("RATE_LIMIT_ENABLED", "true"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid RATE_LIMIT_ENABLED: %w", err)
+	}
+
+	rateLimitRPS, err := strconv.ParseFloat(getEnv("RATE_LIMIT_RPS", "100"), 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid RATE_LIMIT_RPS: %w", err)
+	}
+
+	rateLimitBurst, err := strconv.Atoi(getEnv("RATE_LIMIT_BURST", "200"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid RATE_LIMIT_BURST: %w", err)
+	}
+
 	maxOpenConnections, err := strconv.Atoi(getEnv("DB_MAX_OPEN_CONNS", "25"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid DB_MAX_OPEN_CONNS: %w", err)
@@ -92,6 +120,14 @@ func Load() (*Config, error) {
 		Log: LogConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "json"),
+		},
+		RateLimit: RateLimitConfig{
+			Enabled:           rateLimitEnabled,
+			RequestsPerSecond: rateLimitRPS,
+			Burst:             rateLimitBurst,
+		},
+		CORS: CORSConfig{
+			AllowedOrigins: strings.Split(getEnv("CORS_ALLOWED_ORIGINS", "*"), ","),
 		},
 	}
 

@@ -22,6 +22,7 @@ type AuthService interface {
 	Login(ctx context.Context, email, password string) (string, error)
 	ValidateToken(token string) (*Claims, error)
 	RequireRole(claims *Claims, role model.Role) error
+	Refresh(claims *Claims) (string, error)
 }
 
 type authService struct {
@@ -39,20 +40,20 @@ func NewAuthService(users store.UserStore, jwtSecret string, tokenTTL time.Durat
 }
 
 func (s *authService) Login(ctx context.Context, email, password string) (string, error) {
-	u, err := s.users.GetByEmail(ctx, email)
+	user, err := s.users.GetByEmail(ctx, email)
 	if err != nil {
 		return "", ErrInvalidCredentials
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return "", ErrInvalidCredentials
 	}
 
 	claims := &Claims{
-		UserID: u.ID.String(),
-		Role:   u.Role,
+		UserID: user.ID.String(),
+		Role:   user.Role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   u.ID.String(),
+			Subject:   user.ID.String(),
 			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(s.tokenTTL)),
 		},
@@ -90,4 +91,21 @@ func (s *authService) RequireRole(claims *Claims, role model.Role) error {
 		return ErrUnauthorized
 	}
 	return nil
+}
+
+func (s *authService) Refresh(claims *Claims) (string, error) {
+	newClaims := &Claims{
+		UserID: claims.UserID,
+		Role:   claims.Role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   claims.Subject,
+			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(s.tokenTTL)),
+		},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, newClaims).SignedString(s.jwtSecret)
+	if err != nil {
+		return "", fmt.Errorf("sign token: %w", err)
+	}
+	return token, nil
 }

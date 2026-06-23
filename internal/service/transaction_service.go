@@ -21,36 +21,37 @@ type TransactionService interface {
 	Withdraw(ctx context.Context, fromUserID uuid.UUID, amount decimal.Decimal) (*model.Transaction, error)
 	Transfer(ctx context.Context, fromUserID, toUserID uuid.UUID, amount decimal.Decimal) (*model.Transaction, error)
 	Reverse(ctx context.Context, txID uuid.UUID) error
+	GetByID(ctx context.Context, id uuid.UUID) (*model.Transaction, error)
 }
 
 type transactionService struct {
-	db   *sql.DB
-	txs  store.TransactionStore
-	sem  *worker.Semaphore
+	db               *sql.DB
+	transactionStore store.TransactionStore
+	semaphore        *worker.Semaphore
 }
 
-func NewTransactionService(db *sql.DB, txs store.TransactionStore, maxConcurrent int) TransactionService {
+func NewTransactionService(db *sql.DB, transactionStore store.TransactionStore, maxConcurrent int) TransactionService {
 	return &transactionService{
-		db:  db,
-		txs: txs,
-		sem: worker.NewSemaphore(maxConcurrent),
+		db:               db,
+		transactionStore: transactionStore,
+		semaphore:        worker.NewSemaphore(maxConcurrent),
 	}
 }
 
 func (s *transactionService) Deposit(ctx context.Context, toUserID uuid.UUID, amount decimal.Decimal) (*model.Transaction, error) {
-	t := &model.Transaction{
+	newTransaction := &model.Transaction{
 		ToUserID: &toUserID,
 		Amount:   amount,
 		Type:     model.TypeDeposit,
 	}
-	if err := validator.Transaction(t); err != nil {
+	if err := validator.Transaction(newTransaction); err != nil {
 		return nil, err
 	}
 
-	if err := s.sem.Acquire(ctx); err != nil {
+	if err := s.semaphore.Acquire(ctx); err != nil {
 		return nil, fmt.Errorf("acquire slot: %w", err)
 	}
-	defer s.sem.Release()
+	defer s.semaphore.Release()
 
 	return s.runInTx(ctx, func(tx *sql.Tx) (*model.Transaction, error) {
 		if err := creditTx(ctx, tx, toUserID, amount); err != nil {
@@ -61,19 +62,19 @@ func (s *transactionService) Deposit(ctx context.Context, toUserID uuid.UUID, am
 }
 
 func (s *transactionService) Withdraw(ctx context.Context, fromUserID uuid.UUID, amount decimal.Decimal) (*model.Transaction, error) {
-	t := &model.Transaction{
+	newTransaction := &model.Transaction{
 		FromUserID: &fromUserID,
 		Amount:     amount,
 		Type:       model.TypeWithdrawal,
 	}
-	if err := validator.Transaction(t); err != nil {
+	if err := validator.Transaction(newTransaction); err != nil {
 		return nil, err
 	}
 
-	if err := s.sem.Acquire(ctx); err != nil {
+	if err := s.semaphore.Acquire(ctx); err != nil {
 		return nil, fmt.Errorf("acquire slot: %w", err)
 	}
-	defer s.sem.Release()
+	defer s.semaphore.Release()
 
 	return s.runInTx(ctx, func(tx *sql.Tx) (*model.Transaction, error) {
 		balance, err := lockBalance(ctx, tx, fromUserID)
@@ -91,23 +92,22 @@ func (s *transactionService) Withdraw(ctx context.Context, fromUserID uuid.UUID,
 }
 
 func (s *transactionService) Transfer(ctx context.Context, fromUserID, toUserID uuid.UUID, amount decimal.Decimal) (*model.Transaction, error) {
-	t := &model.Transaction{
+	newTransaction := &model.Transaction{
 		FromUserID: &fromUserID,
 		ToUserID:   &toUserID,
 		Amount:     amount,
 		Type:       model.TypeTransfer,
 	}
-	if err := validator.Transaction(t); err != nil {
+	if err := validator.Transaction(newTransaction); err != nil {
 		return nil, err
 	}
 
-	if err := s.sem.Acquire(ctx); err != nil {
+	if err := s.semaphore.Acquire(ctx); err != nil {
 		return nil, fmt.Errorf("acquire slot: %w", err)
 	}
-	defer s.sem.Release()
+	defer s.semaphore.Release()
 
 	return s.runInTx(ctx, func(tx *sql.Tx) (*model.Transaction, error) {
-		// Deadlock'u önlemek için satırları her zaman aynı sırada kilitle.
 		ids := []uuid.UUID{fromUserID, toUserID}
 		sort.Slice(ids, func(i, j int) bool {
 			return ids[i].String() < ids[j].String()
@@ -138,7 +138,7 @@ func (s *transactionService) Transfer(ctx context.Context, fromUserID, toUserID 
 }
 
 func (s *transactionService) Reverse(ctx context.Context, txID uuid.UUID) error {
-	original, err := s.txs.GetByID(ctx, txID)
+	original, err := s.transactionStore.GetByID(ctx, txID)
 	if err != nil {
 		return fmt.Errorf("get transaction: %w", err)
 	}
@@ -147,10 +147,10 @@ func (s *transactionService) Reverse(ctx context.Context, txID uuid.UUID) error 
 		return ErrInvalidTransition
 	}
 
-	if err := s.sem.Acquire(ctx); err != nil {
+	if err := s.semaphore.Acquire(ctx); err != nil {
 		return fmt.Errorf("acquire slot: %w", err)
 	}
-	defer s.sem.Release()
+	defer s.semaphore.Release()
 
 	_, err = s.runInTx(ctx, func(tx *sql.Tx) (*model.Transaction, error) {
 		switch original.Type {
@@ -191,13 +191,20 @@ func (s *transactionService) Reverse(ctx context.Context, txID uuid.UUID) error 
 	return err
 }
 
-// runInTx bir DB transaction açar, fn'i çalıştırır; hata varsa rollback, yoksa commit yapar.
+func (s *transactionService) GetByID(ctx context.Context, id uuid.UUID) (*model.Transaction, error) {
+	transaction, err := s.transactionStore.GetByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get transaction: %w", err)
+	}
+	return transaction, nil
+}
+
 func (s *transactionService) runInTx(ctx context.Context, fn func(*sql.Tx) (*model.Transaction, error)) (*model.Transaction, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback() //nolint:errcheck — no-op after Commit
+	defer tx.Rollback()
 
 	result, err := fn(tx)
 	if err != nil {
@@ -211,17 +218,21 @@ func (s *transactionService) runInTx(ctx context.Context, fn func(*sql.Tx) (*mod
 	return result, nil
 }
 
-// lockBalance SELECT FOR UPDATE ile balance satırını kilitler ve mevcut miktarı döner.
 func lockBalance(ctx context.Context, tx *sql.Tx, userID uuid.UUID) (decimal.Decimal, error) {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO balances (user_id, amount, last_updated_at)
+		 VALUES ($1, 0, NOW())
+		 ON CONFLICT (user_id) DO NOTHING`,
+		userID,
+	); err != nil {
+		return decimal.Zero, fmt.Errorf("ensure balance row: %w", err)
+	}
+
 	var amount decimal.Decimal
-	err := tx.QueryRowContext(ctx,
+	if err := tx.QueryRowContext(ctx,
 		`SELECT amount FROM balances WHERE user_id = $1 FOR UPDATE`,
 		userID,
-	).Scan(&amount)
-	if err == sql.ErrNoRows {
-		return decimal.Zero, store.ErrNotFound
-	}
-	if err != nil {
+	).Scan(&amount); err != nil {
 		return decimal.Zero, fmt.Errorf("lock balance %s: %w", userID, err)
 	}
 	return amount, nil
@@ -237,8 +248,11 @@ func debitTx(ctx context.Context, tx *sql.Tx, userID uuid.UUID, amount decimal.D
 
 func creditTx(ctx context.Context, tx *sql.Tx, userID uuid.UUID, amount decimal.Decimal) error {
 	_, err := tx.ExecContext(ctx,
-		`UPDATE balances SET amount = amount + $1, last_updated_at = NOW() WHERE user_id = $2`,
-		amount, userID,
+		`INSERT INTO balances (user_id, amount, last_updated_at)
+		 VALUES ($1, $2, NOW())
+		 ON CONFLICT (user_id) DO UPDATE
+		 SET amount = balances.amount + $2, last_updated_at = NOW()`,
+		userID, amount,
 	)
 	return err
 }

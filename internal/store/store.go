@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"github.com/alperkirkus/fintech-backend/internal/model"
 )
@@ -17,6 +19,8 @@ type UserStore interface {
 	GetByEmail(ctx context.Context, email string) (*model.User, error)
 	GetByUsername(ctx context.Context, username string) (*model.User, error)
 	Update(ctx context.Context, user *model.User) error
+	List(ctx context.Context, limit, offset int) ([]*model.User, error)
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 type TransactionStore interface {
@@ -24,6 +28,7 @@ type TransactionStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*model.Transaction, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*model.Transaction, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status model.TransactionStatus) error
+	GetNetAmountByUserIDUntil(ctx context.Context, userID uuid.UUID, until time.Time) (decimal.Decimal, error)
 }
 
 type BalanceStore interface {

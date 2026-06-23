@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"github.com/alperkirkus/fintech-backend/internal/model"
 	"github.com/alperkirkus/fintech-backend/internal/store"
@@ -13,31 +15,29 @@ import (
 type BalanceService interface {
 	GetBalance(ctx context.Context, userID uuid.UUID) (*model.Balance, error)
 	GetHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*model.Transaction, error)
+	GetAtTime(ctx context.Context, userID uuid.UUID, at time.Time) (decimal.Decimal, error)
 }
 
 type balanceService struct {
-	balances store.BalanceStore
-	txs      store.TransactionStore
+	balances     store.BalanceStore
+	transactions store.TransactionStore
 }
 
-func NewBalanceService(balances store.BalanceStore, txs store.TransactionStore) BalanceService {
+func NewBalanceService(balances store.BalanceStore, transactions store.TransactionStore) BalanceService {
 	return &balanceService{
-		balances: balances,
-		txs:      txs,
+		balances:     balances,
+		transactions: transactions,
 	}
 }
 
 func (s *balanceService) GetBalance(ctx context.Context, userID uuid.UUID) (*model.Balance, error) {
-	b, err := s.balances.GetByUserID(ctx, userID)
+	balance, err := s.balances.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get balance: %w", err)
 	}
-	return b, nil
+	return balance, nil
 }
 
-// GetHistory kullanıcının işlem geçmişini sayfalı olarak döner.
-// Tarihsel bakiye optimizasyonu: işlemler DB'de zaten DESC sıralı index ile tutulduğundan
-// ek hesaplama gerekmez.
 func (s *balanceService) GetHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*model.Transaction, error) {
 	if limit <= 0 {
 		limit = 20
@@ -46,9 +46,20 @@ func (s *balanceService) GetHistory(ctx context.Context, userID uuid.UUID, limit
 		limit = 100
 	}
 
-	txs, err := s.txs.GetByUserID(ctx, userID, limit, offset)
+	transactionList, err := s.transactions.GetByUserID(ctx, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("get history: %w", err)
 	}
-	return txs, nil
+	if transactionList == nil {
+		return []*model.Transaction{}, nil
+	}
+	return transactionList, nil
+}
+
+func (s *balanceService) GetAtTime(ctx context.Context, userID uuid.UUID, at time.Time) (decimal.Decimal, error) {
+	amount, err := s.transactions.GetNetAmountByUserIDUntil(ctx, userID, at)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("get balance at time: %w", err)
+	}
+	return amount, nil
 }

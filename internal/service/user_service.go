@@ -17,6 +17,9 @@ type UserService interface {
 	Register(ctx context.Context, username, email, password string) (*model.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*model.User, error)
 	GetByEmail(ctx context.Context, email string) (*model.User, error)
+	List(ctx context.Context, limit, offset int) ([]*model.User, error)
+	Update(ctx context.Context, id uuid.UUID, username, email string) (*model.User, error)
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 type userService struct {
@@ -38,7 +41,7 @@ func (s *userService) Register(ctx context.Context, username, email, password st
 	}
 
 	now := time.Now().UTC()
-	u := &model.User{
+	user := &model.User{
 		ID:           uuid.New(),
 		Username:     username,
 		Email:        email,
@@ -48,29 +51,71 @@ func (s *userService) Register(ctx context.Context, username, email, password st
 		UpdatedAt:    now,
 	}
 
-	if err := validator.User(u); err != nil {
+	if err := validator.User(user); err != nil {
 		return nil, err
 	}
 
-	if err := s.users.Create(ctx, u); err != nil {
+	if err := s.users.Create(ctx, user); err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 
-	return u, nil
+	return user, nil
 }
 
 func (s *userService) GetByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
-	u, err := s.users.GetByID(ctx, id)
+	user, err := s.users.GetByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
-	return u, nil
+	return user, nil
 }
 
 func (s *userService) GetByEmail(ctx context.Context, email string) (*model.User, error) {
-	u, err := s.users.GetByEmail(ctx, email)
+	user, err := s.users.GetByEmail(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("get user by email: %w", err)
 	}
-	return u, nil
+	return user, nil
+}
+
+func (s *userService) List(ctx context.Context, limit, offset int) ([]*model.User, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	users, err := s.users.List(ctx, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	if users == nil {
+		return []*model.User{}, nil
+	}
+	return users, nil
+}
+
+func (s *userService) Update(ctx context.Context, id uuid.UUID, username, email string) (*model.User, error) {
+	user, err := s.users.GetByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	if username != "" {
+		user.Username = username
+	}
+	if email != "" {
+		user.Email = email
+	}
+	user.UpdatedAt = time.Now().UTC()
+	if err := s.users.Update(ctx, user); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+	return user, nil
+}
+
+func (s *userService) Delete(ctx context.Context, id uuid.UUID) error {
+	if err := s.users.Delete(ctx, id); err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	return nil
 }
